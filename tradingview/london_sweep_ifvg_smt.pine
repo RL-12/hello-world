@@ -40,6 +40,8 @@ ifvgAge   = input.int(120, "Expiration d'un IFVG (barres après inversion)", min
 farAtr    = input.float(8.0, "Retirer les zones éloignées de plus de (× ATR 14)", minval = 0, step = 0.5, group = grpF,
      tooltip = "0 = désactivé. Une zone dont le milieu est à plus de N × ATR du prix de clôture est retirée. Évite que d'anciennes zones étirent l'échelle du graphique.")
 showRetest = input.bool(true, "Marquer le retest d'un IFVG", group = grpF)
+keepHist   = input.bool(true, "Conserver les zones terminées (historique)", group = grpF,
+     tooltip = "Une zone invalidée, périmée ou éloignée du prix reste tracée sur sa période, en plus discret, au lieu d'être effacée.")
 
 grpT      = "Tableau"
 showTbl   = input.bool(true, "Afficher le tableau", group = grpT)
@@ -208,6 +210,18 @@ type Fvg
 
 var array<Fvg> fvgs = array.new<Fvg>()
 
+// Zone terminée : figée à la barre courante et atténuée (ou supprimée si invisible / historique désactivé)
+f_finish(Fvg f) =>
+    bool visible = f.inverted or showFvg
+    if visible and keepHist
+        box.set_right(f.bx, bar_index)
+        color base = f.inverted ? (f.bullOrig ? colBear : colBull) : (f.bullOrig ? colBull : colBear)
+        box.set_bgcolor(f.bx, color.new(base, 90))
+        box.set_border_color(f.bx, color.new(base, 65))
+        box.set_text_color(f.bx, color.new(base, 50))
+    else
+        box.delete(f.bx)
+
 bool ifvgBullEvent  = false
 bool ifvgBearEvent  = false
 bool ifvgBullRetest = false
@@ -235,7 +249,7 @@ if array.size(fvgs) > 0
                 lastIfvgTop   := f.top
                 lastIfvgBot   := f.bot
                 lastIfvgDir   := -1
-                box.set_bgcolor(f.bx, color.new(colBear, 72))
+                box.set_bgcolor(f.bx, color.new(colBear, 65))
                 box.set_border_color(f.bx, color.new(colBear, 20))
                 box.set_border_style(f.bx, line.style_solid)
                 box.set_text(f.bx, "IFVG ▼")
@@ -252,7 +266,7 @@ if array.size(fvgs) > 0
                 lastIfvgTop   := f.top
                 lastIfvgBot   := f.bot
                 lastIfvgDir   := 1
-                box.set_bgcolor(f.bx, color.new(colBull, 72))
+                box.set_bgcolor(f.bx, color.new(colBull, 65))
                 box.set_border_color(f.bx, color.new(colBull, 20))
                 box.set_border_style(f.bx, line.style_solid)
                 box.set_text(f.bx, "IFVG ▲")
@@ -279,7 +293,7 @@ if array.size(fvgs) > 0
                     f.retested := true
                     ifvgBearRetest := true
         if drop
-            box.delete(f.bx)
+            f_finish(f)
             array.remove(fvgs, i)
         else
             box.set_right(f.bx, bar_index)
@@ -305,7 +319,7 @@ if bearFvg
 // Limite du nombre de FVG suivis (les plus anciens sont retirés)
 while array.size(fvgs) > maxFvg
     Fvg old = array.shift(fvgs)
-    box.delete(old.bx)
+    f_finish(old)
 
 // ═══════════════════════════ CONFLUENCE ══════════════════════════════════════
 smtBullOk  = smtBull and not smtBullInv

@@ -61,7 +61,8 @@ Le statut passe à « SETUP HAUSSIER 3/3 » ou « SETUP BAISSIER 3/3 » quand le
 | Nombre max de FVG suivis | `15` | Limite mémoire / lisibilité. |
 | Expiration FVG non inversé | `120` barres | Supprime les FVG jamais inversés. |
 | Expiration IFVG | `120` barres | Retire un IFVG un certain temps après son inversion. |
-| Retirer les zones éloignées (× ATR 14) | `8` | Retire toute zone dont le milieu est à plus de 8 ATR du prix. Évite que d'anciennes zones étirent l'échelle automatique du graphique. `0` = désactivé. |
+| Retirer les zones éloignées (× ATR 14) | `8` | Une zone dont le milieu est à plus de 8 ATR du prix cesse d'être prolongée. Évite que d'anciennes zones étirent l'échelle automatique du graphique. `0` = désactivé. |
+| Conserver les zones terminées (historique) | activé | Une zone invalidée, périmée ou éloignée reste tracée sur sa période, en plus discret, au lieu d'être effacée. |
 
 ## Si l'échelle du graphique semble « bouger » en se déplaçant
 
