@@ -29,11 +29,16 @@ manualSym = input.symbol("CME_MINI:ES1!", "Symbole corrélé (manuel)", group = 
 showSmt   = input.bool(true, "Afficher les étiquettes SMT", group = grpM)
 
 grpF      = "Fair Value Gaps / IFVG"
-showFvg   = input.bool(true, "Afficher les FVG non inversés", group = grpF)
-minFvgAtr = input.float(0.0, "Taille mini du FVG (× ATR 14)", minval = 0, step = 0.1, group = grpF,
+showFvg   = input.bool(false, "Afficher les FVG non inversés", group = grpF,
+     tooltip = "Désactivé : seuls les IFVG (FVG inversés) sont dessinés. Les FVG restent suivis en arrière-plan.")
+minFvgAtr = input.float(0.3, "Taille mini du FVG (× ATR 14)", minval = 0, step = 0.1, group = grpF,
      tooltip = "0 = tous les FVG. 0.3 = ignore les gaps plus petits que 30 % de l'ATR(14).")
-maxFvg    = input.int(30, "Nombre max de FVG suivis", minval = 5, maxval = 100, group = grpF)
-maxAge    = input.int(300, "Expiration d'un FVG non inversé (barres)", minval = 20, group = grpF)
+maxFvg    = input.int(15, "Nombre max de FVG suivis", minval = 3, maxval = 100, group = grpF)
+maxAge    = input.int(120, "Expiration d'un FVG non inversé (barres)", minval = 10, group = grpF)
+ifvgAge   = input.int(120, "Expiration d'un IFVG (barres après inversion)", minval = 10, group = grpF,
+     tooltip = "Passé ce délai, la zone est retirée du graphique même si elle n'a pas été invalidée.")
+farAtr    = input.float(8.0, "Retirer les zones éloignées de plus de (× ATR 14)", minval = 0, step = 0.5, group = grpF,
+     tooltip = "0 = désactivé. Une zone dont le milieu est à plus de N × ATR du prix de clôture est retirée. Évite que d'anciennes zones étirent l'échelle du graphique.")
 showRetest = input.bool(true, "Marquer le retest d'un IFVG", group = grpF)
 
 grpT      = "Tableau"
@@ -207,12 +212,17 @@ bool ifvgBullEvent  = false
 bool ifvgBearEvent  = false
 bool ifvgBullRetest = false
 bool ifvgBearRetest = false
+atrVal = ta.atr(14)
 
 if array.size(fvgs) > 0
     for i = array.size(fvgs) - 1 to 0
         Fvg f = array.get(fvgs, i)
         bool drop = false
-        if not f.inverted
+        // Zone trop éloignée du prix : retirée pour ne pas étirer l'échelle du graphique
+        bool tooFar = farAtr > 0 and math.abs(close - (f.top + f.bot) / 2) > farAtr * atrVal
+        if tooFar
+            drop := true
+        else if not f.inverted
             // Expiration des FVG jamais inversés
             if bar_index - f.born > maxAge
                 drop := true
@@ -250,6 +260,9 @@ if array.size(fvgs) > 0
                 box.set_text_size(f.bx, size.tiny)
                 box.set_text_halign(f.bx, text.align_right)
                 box.set_text_valign(f.bx, text.align_bottom)
+        else if bar_index - f.invBar > ifvgAge
+            // IFVG périmé
+            drop := true
         else
             if not f.bullOrig
                 // IFVG haussier : invalidé si clôture sous la zone, retest si le prix y revient
@@ -272,7 +285,6 @@ if array.size(fvgs) > 0
             box.set_right(f.bx, bar_index)
 
 // Détection d'un nouveau FVG (3 bougies)
-atrVal  = ta.atr(14)
 minSize = atrVal * minFvgAtr
 bullFvg = low > high[2] and (low - high[2]) >= minSize
 bearFvg = high < low[2] and (low[2] - high) >= minSize
@@ -332,10 +344,10 @@ if setupBearNew
 
 if txtBelow != ""
     label.new(bar_index, na, txtBelow, yloc = yloc.belowbar, style = label.style_label_up,
-         color = color.new(colBull, 15), textcolor = color.white, size = size.small)
+         color = color.new(colBull, 15), textcolor = color.white, size = size.tiny)
 if txtAbove != ""
     label.new(bar_index, na, txtAbove, yloc = yloc.abovebar, style = label.style_label_down,
-         color = color.new(colBear, 15), textcolor = color.white, size = size.small)
+         color = color.new(colBear, 15), textcolor = color.white, size = size.tiny)
 
 // ═══════════════════════════ TABLEAU ═════════════════════════════════════════
 tblPos  = tblPosS == "Haut droite" ? position.top_right : tblPosS == "Haut gauche" ? position.top_left :

@@ -56,9 +56,23 @@ Le statut passe à « SETUP HAUSSIER 3/3 » ou « SETUP BAISSIER 3/3 » quand le
 | Fenêtre de prise de liquidité | `0500-1600` | Période pendant laquelle une cassure compte comme sweep. |
 | Symbole corrélé automatique | activé | NQ/NDX/US100 → `CME_MINI:ES1!` ; ES/SPX/US500 → `CME_MINI:NQ1!`. |
 | Symbole corrélé (manuel) | `CME_MINI:ES1!` | Utilisé si l'automatique est désactivé ou si le ticker n'est pas reconnu. |
-| Taille mini du FVG (× ATR 14) | `0` | Filtre les petits gaps. |
-| Nombre max de FVG suivis | `30` | Limite mémoire / lisibilité. |
-| Expiration FVG non inversé | `300` barres | Supprime les FVG jamais inversés. |
+| Afficher les FVG non inversés | désactivé | Seuls les IFVG sont dessinés ; les FVG restent suivis en arrière-plan. |
+| Taille mini du FVG (× ATR 14) | `0.3` | Filtre les petits gaps. |
+| Nombre max de FVG suivis | `15` | Limite mémoire / lisibilité. |
+| Expiration FVG non inversé | `120` barres | Supprime les FVG jamais inversés. |
+| Expiration IFVG | `120` barres | Retire un IFVG un certain temps après son inversion. |
+| Retirer les zones éloignées (× ATR 14) | `8` | Retire toute zone dont le milieu est à plus de 8 ATR du prix. Évite que d'anciennes zones étirent l'échelle automatique du graphique. `0` = désactivé. |
+
+## Si l'échelle du graphique semble « bouger » en se déplaçant
+
+Les tracés sont ancrés aux barres (`xloc.bar_index`) et ne se déplacent pas par rapport aux bougies.
+En revanche, l'échelle automatique de TradingView inclut les zones dessinées : une ancienne zone
+éloignée du prix et prolongée jusqu'à la dernière barre tire l'échelle verticale et la fait varier
+à chaque déplacement. Deux remèdes :
+
+- laisser les paramètres d'expiration et de distance (ci-dessus) retirer les zones éloignées ;
+- dans TradingView, clic droit sur l'échelle de prix → activer l'option qui limite l'échelle
+  automatique aux bougies (« Échelle du graphique des prix uniquement » / *Scale price chart only*).
 
 ## Limites connues
 
