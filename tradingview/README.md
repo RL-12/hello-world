@@ -4,85 +4,91 @@ Fichier : [`london_sweep_ifvg_smt.pine`](./london_sweep_ifvg_smt.pine)
 
 ## Ce que fait l'indicateur
 
-Il combine trois concepts de la méthodologie ICT sur un graphique intraday :
-
 1. **Prise de liquidité de la session de Londres**
    Le plus haut et le plus bas de la session de Londres sont mémorisés à la fin de la session.
    Dès que le prix casse l'un de ces niveaux pendant la fenêtre de prise de liquidité
    (par défaut la session de New York), l'événement est marqué « Sweep London Low/High ».
    Si la bougie clôture de nouveau à l'intérieur de la plage, la mention « (rejet) » est ajoutée.
 
-2. **Inversion Fair Value Gap (IFVG)**
-   Un FVG classique (gap entre la bougie 1 et la bougie 3) est suivi tant qu'il n'est pas invalidé.
-   - FVG haussier clôturé **en dessous** → devient un **IFVG baissier** (résistance).
-   - FVG baissier clôturé **au-dessus** → devient un **IFVG haussier** (support).
-   Un IFVG est supprimé si le prix clôture de nouveau au-delà de la zone. Le premier retour du prix
-   dans la zone est marqué « Retest IFVG ».
+2. **SMT divergence sur pivots synchronisés (Nasdaq / S&P 500)**
+   Modèle strict en deux étapes :
+   - *Étape 1 — niveau synchronisé.* Un pivot haut (BSL, buyside liquidity) ou un pivot bas
+     (SSL, sellside liquidity) n'est retenu que s'il est confirmé **sur la même barre** sur les
+     deux symboles. Aucune tolérance.
+   - *Étape 2 — désaccord de prise.* La SMT se déclenche quand **exactement un** des deux symboles
+     prend le niveau (mèche au-delà). SMT haussière = divergence SSL, SMT baissière = divergence BSL.
+   - *Temps réel (trailing).* Activé par défaut : la SMT est tracée dès la divergence, en ligne
+     diagonale du niveau synchronisé à l'extrême de la bougie de prise, et suit les nouveaux
+     extrêmes du graphique. Désactivé : elle n'est tracée qu'une fois confirmée.
+   - *Confirmation (parquage).* Un nouveau pivot se forme sur le symbole du graphique dans le
+     même sens (pivot bas pour une SMT SSL, pivot haut pour une SMT BSL). La ligne cesse de
+     suivre et l'étiquette passe de « … » à « ✓ ».
+   - *Invalidation.* Si les deux symboles finissent par prendre le niveau, ou si le prix dépasse
+     l'extrême parqué, la SMT est supprimée.
+   - *Lisibilité.* Nombre max de SMT visibles, dédoublonnage (une nouvelle SMT dans le même sens
+     remplace une SMT non confirmée), sensibilité des pivots (Sensible 1 / Normal 4 / Strict 6).
 
-3. **SMT divergence Nasdaq / S&P 500**
-   Sur la barre où l'un des deux indices prend la liquidité de Londres et l'autre ne la prend pas,
-   une divergence SMT est signalée (haussière sur les lows, baissière sur les highs).
-   Si le second indice prend finalement la même liquidité plus tard dans la session, la SMT
-   passe en « Invalidé » dans le tableau.
+3. **Inversion Fair Value Gap (IFVG), uniquement avec une SMT**
+   Les FVG sont suivis en arrière-plan. Une inversion (FVG haussier clôturé en dessous → IFVG
+   baissier ; FVG baissier clôturé au-dessus → IFVG haussier) n'est **tracée que si une SMT est
+   active**, par défaut dans le même sens. Sans SMT, l'inversion est ignorée.
+   Un IFVG est figé si le prix clôture de nouveau au-delà de la zone, s'il expire ou s'il
+   s'éloigne du prix. Le premier retour du prix dans la zone est marqué « Retest IFVG ».
 
-4. **Tableau récapitulatif** : état de la session, London High/Low, liquidité prise, SMT,
-   dernier IFVG, score de confluence haussier et baissier (0 à 3), statut.
+4. **Tableau récapitulatif** : session, London High/Low, liquidité prise, dernière SMT (sens,
+   état, qui a pris et qui a tenu, niveau), nombre de niveaux synchronisés et de SMT actives,
+   dernier IFVG, scores de confluence, statut.
 
-5. **Alertes** (`alertcondition`) : sweep low/high, SMT, IFVG formé, retest IFVG, setup complet 3/3.
+5. **Alertes** (`alertcondition`), filtrables par session : sweep low/high, SMT détectée,
+   confirmée, invalidée, IFVG formé, retest IFVG, setup complet 3/3.
 
 ## Score de confluence
 
 | Élément | Haussier | Baissier |
 |---|---|---|
 | Sweep | London Low pris | London High pris |
-| SMT | Divergence haussière valide | Divergence baissière valide |
-| IFVG | IFVG haussier formé **après** le sweep | IFVG baissier formé **après** le sweep |
+| SMT | SMT haussière (SSL) active | SMT baissière (BSL) active |
+| IFVG | IFVG haussier tracé **après** le sweep | IFVG baissier tracé **après** le sweep |
 
-Le statut passe à « SETUP HAUSSIER 3/3 » ou « SETUP BAISSIER 3/3 » quand les trois éléments sont réunis.
+L'option « Exiger une SMT confirmée » impose une SMT parquée pour compter le point SMT et pour tracer les IFVG.
 
 ## Installation
 
-1. Ouvrir TradingView → onglet **Éditeur Pine** en bas du graphique.
+1. TradingView → onglet **Éditeur Pine** → supprimer tout le contenu par défaut.
 2. Coller le contenu de `london_sweep_ifvg_smt.pine`.
-3. Cliquer sur **Ajouter au graphique**.
-4. Utiliser un timeframe intraday (1 min à 1 h). En daily ou plus, le tableau affiche un avertissement.
+3. **Ajouter au graphique**. Timeframe intraday (1 min à 1 h).
 
 ## Paramètres principaux
 
 | Paramètre | Défaut | Rôle |
 |---|---|---|
-| Session de Londres | `0200-0500` | Plage horaire de Londres (fuseau ci-dessous). 02:00-05:00 New York = London killzone. |
-| Fuseau horaire | `America/New_York` | Fuseau appliqué aux deux sessions. |
+| Session de Londres | `0200-0500` | Plage horaire de Londres (fuseau ci-dessous). |
+| Fuseau horaire | `America/New_York` | Appliqué à toutes les sessions. |
 | Fenêtre de prise de liquidité | `0500-1600` | Période pendant laquelle une cassure compte comme sweep. |
-| Symbole corrélé automatique | activé | NQ/NDX/US100 → `CME_MINI:ES1!` ; ES/SPX/US500 → `CME_MINI:NQ1!`. |
-| Symbole corrélé (manuel) | `CME_MINI:ES1!` | Utilisé si l'automatique est désactivé ou si le ticker n'est pas reconnu. |
-| Afficher les FVG non inversés | désactivé | Seuls les IFVG sont dessinés ; les FVG restent suivis en arrière-plan. |
+| Symbole corrélé automatique | activé | NQ/MNQ/NDX/US100 → `CME_MINI:ES1!` ; ES/MES/SPX/US500 → `CME_MINI:NQ1!`. |
+| Sensibilité des pivots | Normal | Sensible = 1, Normal = 4, Strict = 6 barres de chaque côté. |
+| SMT en temps réel | activé | Tracé dès la divergence avec trailing ; sinon tracé à la confirmation. |
+| Nombre max de SMT visibles | `6` | Les plus anciennes sont retirées. |
+| Dédoublonner | activé | Une nouvelle SMT remplace une SMT non confirmée du même sens. |
+| Niveaux synchronisés suivis | `20` / `300` barres | Limite et expiration des niveaux BSL/SSL. |
+| IFVG dans le sens de la SMT | activé | Sinon n'importe quelle SMT active suffit. |
 | Taille mini du FVG (× ATR 14) | `0.3` | Filtre les petits gaps. |
-| Nombre max de FVG suivis | `15` | Limite mémoire / lisibilité. |
-| Expiration FVG non inversé | `120` barres | Supprime les FVG jamais inversés. |
-| Expiration IFVG | `120` barres | Retire un IFVG un certain temps après son inversion. |
-| Retirer les zones éloignées (× ATR 14) | `8` | Une zone dont le milieu est à plus de 8 ATR du prix cesse d'être prolongée. Évite que d'anciennes zones étirent l'échelle automatique du graphique. `0` = désactivé. |
-| Conserver les zones terminées (historique) | activé | Une zone invalidée, périmée ou éloignée reste tracée sur sa période, en plus discret, au lieu d'être effacée. |
-
-## Si l'échelle du graphique semble « bouger » en se déplaçant
-
-Les tracés sont ancrés aux barres (`xloc.bar_index`) et ne se déplacent pas par rapport aux bougies.
-En revanche, l'échelle automatique de TradingView inclut les zones dessinées : une ancienne zone
-éloignée du prix et prolongée jusqu'à la dernière barre tire l'échelle verticale et la fait varier
-à chaque déplacement. Deux remèdes :
-
-- laisser les paramètres d'expiration et de distance (ci-dessus) retirer les zones éloignées ;
-- dans TradingView, clic droit sur l'échelle de prix → activer l'option qui limite l'échelle
-  automatique aux bougies (« Échelle du graphique des prix uniquement » / *Scale price chart only*).
+| Expiration FVG / IFVG | `120` / `120` barres | Retire les zones anciennes. |
+| Figer les zones éloignées (× ATR 14) | `8` | Évite que d'anciennes zones étirent l'échelle automatique. |
+| Conserver les zones terminées | activé | Historique figé et atténué. |
+| Limiter les alertes à une session | désactivé | Par défaut `0930-1600`. |
 
 ## Limites connues
 
-- La SMT est évaluée sur la barre du sweep et sur les sweeps de la même session. Elle ne détecte
-  pas les divergences entre swings intermédiaires hors des niveaux de Londres.
-- Les données du symbole corrélé proviennent de `request.security` sur le même timeframe.
-  Le symbole corrélé doit être accessible sur ton compte TradingView (les données CME temps réel
-  sont payantes ; sans abonnement, TradingView fournit des données différées).
+- Les pivots du symbole corrélé sont calculés via `request.security` sur le même timeframe.
+  Les barres des deux symboles doivent être alignées ; sur des marchés aux horaires différents,
+  la condition « même barre de confirmation » peut ne jamais être satisfaite.
+- Le symbole corrélé doit être accessible sur ton compte TradingView (données CME temps réel
+  payantes ; sinon données différées).
+- Sur la barre en cours, les états peuvent changer jusqu'à la clôture (repaint intra-barre
+  normal, aucun repaint historique).
+- La logique SMT est une réimplémentation d'après la description publique de l'indicateur
+  « SMT Pro+ [TakingProphets] », pas une copie de son code (non accessible).
 - Le script n'a pas été compilé hors de TradingView : aucun compilateur Pine n'existe hors
-  de la plateforme. Toute erreur de compilation doit être signalée avec le message exact.
-- Ce n'est pas un conseil en investissement. L'indicateur ne fait que visualiser des conditions
-  techniques.
+  de la plateforme.
+- Ce n'est pas un conseil en investissement.
