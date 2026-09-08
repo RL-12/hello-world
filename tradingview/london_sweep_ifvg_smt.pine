@@ -1,0 +1,408 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+//  London Sweep + IFVG + SMT
+//  1) Prise de liquidité du plus haut / plus bas de la session de Londres
+//  2) Inversion Fair Value Gap (IFVG) : un FVG traversé en clôture devient
+//     support (IFVG haussier) ou résistance (IFVG baissier)
+//  3) SMT divergence entre le graphique (ex. NQ) et un symbole corrélé (ex. ES)
+//  4) Tableau récapitulatif + alertes
+//  Timeframe intraday requis (les sessions n'ont pas de sens en daily+).
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("London Sweep + IFVG + SMT", shorttitle = "LDN·IFVG·SMT", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ═══════════════════════════════ ENTRÉES ═════════════════════════════════════
+grpS      = "Session de Londres"
+sessLdn   = input.session("0200-0500", "Session de Londres", group = grpS,
+     tooltip = "Exprimée dans le fuseau ci-dessous. 02:00-05:00 New York = London killzone (ICT).\nPour la session complète : 0800-1630 avec le fuseau Europe/London.")
+tz        = input.string("America/New_York", "Fuseau horaire", group = grpS,
+     options = ["America/New_York", "Europe/London", "Europe/Paris", "UTC"])
+sessSweep = input.session("0500-1600", "Fenêtre de prise de liquidité", group = grpS,
+     tooltip = "Période (même fuseau) pendant laquelle une cassure du plus haut / plus bas de Londres compte comme prise de liquidité. Par défaut : session de New York.")
+showBg    = input.bool(true, "Colorer la session de Londres", group = grpS)
+showLines = input.bool(true, "Tracer London High / London Low", group = grpS)
+
+grpM      = "SMT (divergence Nasdaq / S&P 500)"
+autoPair  = input.bool(true, "Choisir automatiquement le symbole corrélé", group = grpM,
+     tooltip = "Graphique NQ/NDX/US100 → CME_MINI:ES1!  |  Graphique ES/SPX/US500 → CME_MINI:NQ1!\nSinon le symbole manuel ci-dessous est utilisé.")
+manualSym = input.symbol("CME_MINI:ES1!", "Symbole corrélé (manuel)", group = grpM)
+showSmt   = input.bool(true, "Afficher les étiquettes SMT", group = grpM)
+
+grpF      = "Fair Value Gaps / IFVG"
+showFvg   = input.bool(true, "Afficher les FVG non inversés", group = grpF)
+minFvgAtr = input.float(0.0, "Taille mini du FVG (× ATR 14)", minval = 0, step = 0.1, group = grpF,
+     tooltip = "0 = tous les FVG. 0.3 = ignore les gaps plus petits que 30 % de l'ATR(14).")
+maxFvg    = input.int(30, "Nombre max de FVG suivis", minval = 5, maxval = 100, group = grpF)
+maxAge    = input.int(300, "Expiration d'un FVG non inversé (barres)", minval = 20, group = grpF)
+showRetest = input.bool(true, "Marquer le retest d'un IFVG", group = grpF)
+
+grpT      = "Tableau"
+showTbl   = input.bool(true, "Afficher le tableau", group = grpT)
+tblPosS   = input.string("Haut droite", "Position", group = grpT,
+     options = ["Haut droite", "Haut gauche", "Bas droite", "Bas gauche", "Milieu droite"])
+tblSizeS  = input.string("Petit", "Taille du texte", options = ["Très petit", "Petit", "Normal"], group = grpT)
+
+grpC      = "Couleurs"
+colBull   = input.color(#26a69a, "Haussier", group = grpC)
+colBear   = input.color(#ef5350, "Baissier", group = grpC)
+colSess   = input.color(#2962ff, "Session de Londres", group = grpC)
+
+// ═══════════════════════════ SYMBOLE CORRÉLÉ ═════════════════════════════════
+tickerUp = str.upper(syminfo.ticker)
+isNasdaq = str.contains(tickerUp, "NQ") or str.contains(tickerUp, "NDX") or str.contains(tickerUp, "US100")
+isSp500  = str.contains(tickerUp, "ES") or str.contains(tickerUp, "SPX") or str.contains(tickerUp, "US500")
+corrSym  = autoPair ? (isNasdaq ? "CME_MINI:ES1!" : isSp500 ? "CME_MINI:NQ1!" : manualSym) : manualSym
+corrParts = str.split(corrSym, ":")
+corrName  = array.size(corrParts) > 0 ? array.get(corrParts, array.size(corrParts) - 1) : corrSym
+
+// ═════════════════ SESSION DE LONDRES : PLUS HAUT / PLUS BAS ═════════════════
+// Appelée sur le graphique ET via request.security() pour le symbole corrélé.
+f_sess() =>
+    bool inS = not na(time(timeframe.period, sessLdn, tz))
+    var float h     = na
+    var float l     = na
+    var float hDone = na
+    var float lDone = na
+    if inS and not inS[1]
+        h := high
+        l := low
+    else if inS
+        h := math.max(nz(h, high), high)
+        l := math.min(nz(l, low), low)
+    if not inS and inS[1]
+        hDone := h
+        lDone := l
+    [high, low, close, hDone, lDone, inS]
+
+[_h, _l, _c, lonHi, lonLo, inS]        = f_sess()
+[cH, cL, cC, cLonHi, cLonLo, cInS]     = request.security(corrSym, timeframe.period, f_sess())
+
+sessStart = inS and not inS[1]
+sessEnd   = not inS and inS[1]
+
+// ═══════════════════════════════ ÉTATS ═══════════════════════════════════════
+var bool   lonDone       = false
+var int    lonEndTime    = na
+var bool   sweptLow      = false
+var bool   sweptHigh     = false
+var bool   cSweptLow     = false
+var bool   cSweptHigh    = false
+var int    sweepLowBar   = na
+var int    sweepHighBar  = na
+var int    sweepLowTime  = na
+var int    sweepHighTime = na
+var bool   sweepLowRej   = false
+var bool   sweepHighRej  = false
+var bool   smtBull       = false
+var bool   smtBear       = false
+var bool   smtBullInv    = false
+var bool   smtBearInv    = false
+var string smtBullNote   = ""
+var string smtBearNote   = ""
+var line   lnHi          = na
+var line   lnLo          = na
+var int    ifvgBullBar   = na      // dernière inversion haussière (FVG baissier clôturé au-dessus)
+var int    ifvgBearBar   = na      // dernière inversion baissière (FVG haussier clôturé en dessous)
+var float  lastIfvgTop   = na
+var float  lastIfvgBot   = na
+var int    lastIfvgDir   = 0       // 1 haussier, -1 baissier, 0 aucun
+
+if sessStart
+    lonDone      := false
+    sweptLow     := false
+    sweptHigh    := false
+    cSweptLow    := false
+    cSweptHigh   := false
+    sweepLowBar  := na
+    sweepHighBar := na
+    sweepLowTime := na
+    sweepHighTime := na
+    sweepLowRej  := false
+    sweepHighRej := false
+    smtBull      := false
+    smtBear      := false
+    smtBullInv   := false
+    smtBearInv   := false
+    smtBullNote  := ""
+    smtBearNote  := ""
+
+if sessEnd and not na(lonHi) and not na(lonLo)
+    lonDone    := true
+    lonEndTime := time
+    if showLines
+        lnHi := line.new(bar_index, lonHi, bar_index + 1, lonHi, color = colBear, width = 1)
+        lnLo := line.new(bar_index, lonLo, bar_index + 1, lonLo, color = colBull, width = 1)
+        label.new(bar_index, lonHi, "London High", style = label.style_label_left, color = color.new(colBear, 100), textcolor = colBear, size = size.tiny)
+        label.new(bar_index, lonLo, "London Low",  style = label.style_label_left, color = color.new(colBull, 100), textcolor = colBull, size = size.tiny)
+
+// ══════════════════ PRISE DE LIQUIDITÉ + SMT ═════════════════════════════════
+inSweepWin = not na(time(timeframe.period, sessSweep, tz))
+window     = lonDone and inSweepWin and not inS and not na(lonHi) and not na(lonLo)
+cWindow    = window and not na(cLonHi) and not na(cLonLo)
+
+newSweepLow   = window  and not sweptLow   and low  < lonLo
+newSweepHigh  = window  and not sweptHigh  and high > lonHi
+cNewSweepLow  = cWindow and not cSweptLow  and cL   < cLonLo
+cNewSweepHigh = cWindow and not cSweptHigh and cH   > cLonHi
+
+// SMT : sur la barre où l'un des deux indices prend la liquidité, l'autre ne la prend pas
+smtBullEvent = not smtBull and ((newSweepLow  and not cSweptLow  and not cNewSweepLow)  or (cNewSweepLow  and not sweptLow  and not newSweepLow))
+smtBearEvent = not smtBear and ((newSweepHigh and not cSweptHigh and not cNewSweepHigh) or (cNewSweepHigh and not sweptHigh and not newSweepHigh))
+
+if smtBullEvent
+    smtBull     := true
+    smtBullNote := newSweepLow ? syminfo.ticker + " prend le low, " + corrName + " le tient" : corrName + " prend le low, " + syminfo.ticker + " le tient"
+if smtBearEvent
+    smtBear     := true
+    smtBearNote := newSweepHigh ? syminfo.ticker + " prend le high, " + corrName + " le tient" : corrName + " prend le high, " + syminfo.ticker + " le tient"
+
+if newSweepLow
+    sweptLow     := true
+    sweepLowBar  := bar_index
+    sweepLowTime := time
+    sweepLowRej  := close > lonLo
+    if not na(lnLo)
+        line.set_x2(lnLo, bar_index)
+        line.set_style(lnLo, line.style_dashed)
+if newSweepHigh
+    sweptHigh     := true
+    sweepHighBar  := bar_index
+    sweepHighTime := time
+    sweepHighRej  := close < lonHi
+    if not na(lnHi)
+        line.set_x2(lnHi, bar_index)
+        line.set_style(lnHi, line.style_dashed)
+if cNewSweepLow
+    cSweptLow := true
+if cNewSweepHigh
+    cSweptHigh := true
+
+// Invalidation : les deux indices ont finalement pris la même liquidité
+if smtBull and not smtBullInv and sweptLow and cSweptLow
+    smtBullInv := true
+if smtBear and not smtBearInv and sweptHigh and cSweptHigh
+    smtBearInv := true
+
+// Prolongation des lignes London High / Low tant qu'elles ne sont pas prises
+if lonDone and not inS
+    if not na(lnHi) and not sweptHigh
+        line.set_x2(lnHi, bar_index)
+    if not na(lnLo) and not sweptLow
+        line.set_x2(lnLo, bar_index)
+
+// ═══════════════════════ FVG / INVERSION FVG ═════════════════════════════════
+type Fvg
+    box   bx
+    float top
+    float bot
+    bool  bullOrig            // direction du FVG d'origine
+    bool  inverted = false
+    bool  retested = false
+    int   born
+    int   invBar   = na
+
+var array<Fvg> fvgs = array.new<Fvg>()
+
+bool ifvgBullEvent  = false
+bool ifvgBearEvent  = false
+bool ifvgBullRetest = false
+bool ifvgBearRetest = false
+
+if array.size(fvgs) > 0
+    for i = array.size(fvgs) - 1 to 0
+        Fvg f = array.get(fvgs, i)
+        bool drop = false
+        if not f.inverted
+            // Expiration des FVG jamais inversés
+            if bar_index - f.born > maxAge
+                drop := true
+            else if f.bullOrig and close < f.bot
+                // FVG haussier clôturé en dessous → IFVG baissier (résistance)
+                f.inverted := true
+                f.invBar   := bar_index
+                ifvgBearEvent := true
+                ifvgBearBar   := bar_index
+                lastIfvgTop   := f.top
+                lastIfvgBot   := f.bot
+                lastIfvgDir   := -1
+                box.set_bgcolor(f.bx, color.new(colBear, 72))
+                box.set_border_color(f.bx, color.new(colBear, 20))
+                box.set_border_style(f.bx, line.style_solid)
+                box.set_text(f.bx, "IFVG ▼")
+                box.set_text_color(f.bx, colBear)
+                box.set_text_size(f.bx, size.tiny)
+                box.set_text_halign(f.bx, text.align_right)
+                box.set_text_valign(f.bx, text.align_top)
+            else if not f.bullOrig and close > f.top
+                // FVG baissier clôturé au-dessus → IFVG haussier (support)
+                f.inverted := true
+                f.invBar   := bar_index
+                ifvgBullEvent := true
+                ifvgBullBar   := bar_index
+                lastIfvgTop   := f.top
+                lastIfvgBot   := f.bot
+                lastIfvgDir   := 1
+                box.set_bgcolor(f.bx, color.new(colBull, 72))
+                box.set_border_color(f.bx, color.new(colBull, 20))
+                box.set_border_style(f.bx, line.style_solid)
+                box.set_text(f.bx, "IFVG ▲")
+                box.set_text_color(f.bx, colBull)
+                box.set_text_size(f.bx, size.tiny)
+                box.set_text_halign(f.bx, text.align_right)
+                box.set_text_valign(f.bx, text.align_bottom)
+        else
+            if not f.bullOrig
+                // IFVG haussier : invalidé si clôture sous la zone, retest si le prix y revient
+                if close < f.bot
+                    drop := true
+                else if not f.retested and bar_index > f.invBar and low <= f.top
+                    f.retested := true
+                    ifvgBullRetest := true
+            else
+                // IFVG baissier : invalidé si clôture au-dessus, retest si le prix y revient
+                if close > f.top
+                    drop := true
+                else if not f.retested and bar_index > f.invBar and high >= f.bot
+                    f.retested := true
+                    ifvgBearRetest := true
+        if drop
+            box.delete(f.bx)
+            array.remove(fvgs, i)
+        else
+            box.set_right(f.bx, bar_index)
+
+// Détection d'un nouveau FVG (3 bougies)
+atrVal  = ta.atr(14)
+minSize = atrVal * minFvgAtr
+bullFvg = low > high[2] and (low - high[2]) >= minSize
+bearFvg = high < low[2] and (low[2] - high) >= minSize
+
+f_newFvg(bool isBull, float fTop, float fBot) =>
+    color base = isBull ? colBull : colBear
+    int   tr   = showFvg ? 0 : 100
+    box b = box.new(bar_index - 1, fTop, bar_index, fBot, xloc = xloc.bar_index,
+         border_color = color.new(base, math.max(60, tr)), border_style = line.style_dotted,
+         bgcolor = color.new(base, math.max(86, tr)))
+    array.push(fvgs, Fvg.new(bx = b, top = fTop, bot = fBot, bullOrig = isBull, born = bar_index))
+
+if bullFvg
+    f_newFvg(true, low, high[2])      // zone : high de la bougie 1 → low de la bougie 3
+if bearFvg
+    f_newFvg(false, low[2], high)     // zone : high de la bougie 3 → low de la bougie 1
+
+// Limite du nombre de FVG suivis (les plus anciens sont retirés)
+while array.size(fvgs) > maxFvg
+    Fvg old = array.shift(fvgs)
+    box.delete(old.bx)
+
+// ═══════════════════════════ CONFLUENCE ══════════════════════════════════════
+smtBullOk  = smtBull and not smtBullInv
+smtBearOk  = smtBear and not smtBearInv
+ifvgBullOk = sweptLow  and not na(ifvgBullBar) and ifvgBullBar >= sweepLowBar
+ifvgBearOk = sweptHigh and not na(ifvgBearBar) and ifvgBearBar >= sweepHighBar
+
+bullScore = (sweptLow  ? 1 : 0) + (smtBullOk ? 1 : 0) + (ifvgBullOk ? 1 : 0)
+bearScore = (sweptHigh ? 1 : 0) + (smtBearOk ? 1 : 0) + (ifvgBearOk ? 1 : 0)
+setupBull = bullScore == 3
+setupBear = bearScore == 3
+setupBullNew = setupBull and not setupBull[1]
+setupBearNew = setupBear and not setupBear[1]
+
+// ═══════════════════════════ AFFICHAGE ═══════════════════════════════════════
+bgcolor(showBg and inS ? color.new(colSess, 88) : na)
+
+string txtBelow = ""
+string txtAbove = ""
+if newSweepLow
+    txtBelow += "Sweep London Low" + (sweepLowRej ? " (rejet)" : "")
+if smtBullEvent and showSmt
+    txtBelow += (txtBelow != "" ? "\n" : "") + "SMT ▲ " + smtBullNote
+if ifvgBullRetest and showRetest
+    txtBelow += (txtBelow != "" ? "\n" : "") + "Retest IFVG ▲"
+if setupBullNew
+    txtBelow += (txtBelow != "" ? "\n" : "") + "SETUP HAUSSIER 3/3"
+if newSweepHigh
+    txtAbove += "Sweep London High" + (sweepHighRej ? " (rejet)" : "")
+if smtBearEvent and showSmt
+    txtAbove += (txtAbove != "" ? "\n" : "") + "SMT ▼ " + smtBearNote
+if ifvgBearRetest and showRetest
+    txtAbove += (txtAbove != "" ? "\n" : "") + "Retest IFVG ▼"
+if setupBearNew
+    txtAbove += (txtAbove != "" ? "\n" : "") + "SETUP BAISSIER 3/3"
+
+if txtBelow != ""
+    label.new(bar_index, na, txtBelow, yloc = yloc.belowbar, style = label.style_label_up,
+         color = color.new(colBull, 15), textcolor = color.white, size = size.small)
+if txtAbove != ""
+    label.new(bar_index, na, txtAbove, yloc = yloc.abovebar, style = label.style_label_down,
+         color = color.new(colBear, 15), textcolor = color.white, size = size.small)
+
+// ═══════════════════════════ TABLEAU ═════════════════════════════════════════
+tblPos  = tblPosS == "Haut droite" ? position.top_right : tblPosS == "Haut gauche" ? position.top_left :
+     tblPosS == "Bas droite" ? position.bottom_right : tblPosS == "Bas gauche" ? position.bottom_left : position.middle_right
+txtSize = tblSizeS == "Très petit" ? size.tiny : tblSizeS == "Petit" ? size.small : size.normal
+
+var table t = table.new(tblPos, 2, 10, bgcolor = color.new(#131722, 10),
+     frame_color = color.new(color.gray, 40), frame_width = 1,
+     border_color = color.new(color.gray, 70), border_width = 1)
+var bool tblMerged = false
+
+f_row(int r, string k, string v, color vc) =>
+    table.cell(t, 0, r, k, text_color = color.new(color.white, 25), text_halign = text.align_left,  text_size = txtSize)
+    table.cell(t, 1, r, v, text_color = vc,                          text_halign = text.align_right, text_size = txtSize)
+
+f_price(float p) => na(p) ? "—" : str.tostring(p, format.mintick)
+
+if showTbl and barstate.islast
+    table.cell(t, 0, 0, "London Sweep · IFVG · SMT\n" + syminfo.ticker + "  vs  " + corrName,
+         text_color = color.white, bgcolor = color.new(colSess, 55), text_size = txtSize)
+    if not tblMerged
+        table.merge_cells(t, 0, 0, 1, 0)
+        tblMerged := true
+
+    sessTxt = inS ? "En cours" : lonDone ? "Terminée à " + str.format_time(lonEndTime, "HH:mm", tz) : "En attente"
+    sessCol = inS ? colSess : color.white
+
+    hiTxt = f_price(lonHi) + (sweptHigh ? "  ✓ pris" : "")
+    loTxt = f_price(lonLo) + (sweptLow  ? "  ✓ pris" : "")
+
+    liqTxt = sweptLow and sweptHigh ? "Low et High pris" :
+         sweptLow  ? "Low à "  + str.format_time(sweepLowTime,  "HH:mm", tz) + (sweepLowRej  ? " (rejet)" : "") :
+         sweptHigh ? "High à " + str.format_time(sweepHighTime, "HH:mm", tz) + (sweepHighRej ? " (rejet)" : "") : "Aucune"
+    liqCol = sweptLow and not sweptHigh ? colBull : sweptHigh and not sweptLow ? colBear : color.white
+
+    smtTxt = smtBullOk ? "Haussier ✓ · " + smtBullNote :
+         smtBearOk ? "Baissier ✓ · " + smtBearNote :
+         (smtBullInv or smtBearInv) ? "Invalidé (les deux ont pris la liquidité)" : "Aucun"
+    smtCol = smtBullOk ? colBull : smtBearOk ? colBear : (smtBullInv or smtBearInv) ? color.orange : color.white
+
+    ifvgTxt = lastIfvgDir == 0 ? "—" : (lastIfvgDir > 0 ? "Haussier ▲  " : "Baissier ▼  ") + f_price(lastIfvgBot) + " – " + f_price(lastIfvgTop)
+    ifvgCol = lastIfvgDir > 0 ? colBull : lastIfvgDir < 0 ? colBear : color.white
+
+    bullTxt = str.tostring(bullScore) + "/3   " + (sweptLow  ? "Sweep ✓" : "Sweep ✗") + "  " + (smtBullOk ? "SMT ✓" : "SMT ✗") + "  " + (ifvgBullOk ? "IFVG ✓" : "IFVG ✗")
+    bearTxt = str.tostring(bearScore) + "/3   " + (sweptHigh ? "Sweep ✓" : "Sweep ✗") + "  " + (smtBearOk ? "SMT ✓" : "SMT ✗") + "  " + (ifvgBearOk ? "IFVG ✓" : "IFVG ✗")
+
+    statusTxt = timeframe.isdwm ? "⚠ Timeframe intraday requis" : setupBull ? "SETUP HAUSSIER 3/3" : setupBear ? "SETUP BAISSIER 3/3" : "En attente"
+    statusCol = timeframe.isdwm ? color.orange : setupBull ? colBull : setupBear ? colBear : color.white
+
+    f_row(1, "Session Londres",  sessTxt,   sessCol)
+    f_row(2, "London High",      hiTxt,     sweptHigh ? colBear : color.white)
+    f_row(3, "London Low",       loTxt,     sweptLow  ? colBull : color.white)
+    f_row(4, "Liquidité prise",  liqTxt,    liqCol)
+    f_row(5, "SMT vs " + corrName, smtTxt,  smtCol)
+    f_row(6, "Dernier IFVG",     ifvgTxt,   ifvgCol)
+    f_row(7, "Confluence ▲",     bullTxt,   bullScore == 3 ? colBull : color.white)
+    f_row(8, "Confluence ▼",     bearTxt,   bearScore == 3 ? colBear : color.white)
+    f_row(9, "Statut",           statusTxt, statusCol)
+
+// ═══════════════════════════ ALERTES ═════════════════════════════════════════
+alertcondition(newSweepLow,    "London Low pris",        "London Low pris sur {{ticker}} ({{interval}})")
+alertcondition(newSweepHigh,   "London High pris",       "London High pris sur {{ticker}} ({{interval}})")
+alertcondition(smtBullEvent,   "SMT haussier",           "SMT haussier sur {{ticker}} ({{interval}})")
+alertcondition(smtBearEvent,   "SMT baissier",           "SMT baissier sur {{ticker}} ({{interval}})")
+alertcondition(ifvgBullEvent,  "IFVG haussier formé",    "IFVG haussier sur {{ticker}} ({{interval}})")
+alertcondition(ifvgBearEvent,  "IFVG baissier formé",    "IFVG baissier sur {{ticker}} ({{interval}})")
+alertcondition(ifvgBullRetest, "Retest IFVG haussier",   "Retest IFVG haussier sur {{ticker}} ({{interval}})")
+alertcondition(ifvgBearRetest, "Retest IFVG baissier",   "Retest IFVG baissier sur {{ticker}} ({{interval}})")
+alertcondition(setupBullNew,   "Setup haussier complet", "Sweep + SMT + IFVG haussiers sur {{ticker}} ({{interval}})")
+alertcondition(setupBearNew,   "Setup baissier complet", "Sweep + SMT + IFVG baissiers sur {{ticker}} ({{interval}})")
