@@ -26,6 +26,8 @@ tz        = input.string("America/New_York", "Fuseau horaire", group = grpS,
      options = ["America/New_York", "Europe/London", "Europe/Paris", "UTC"])
 sessSweep = input.session("0500-1600", "Fenêtre de prise de liquidité", group = grpS,
      tooltip = "Période (même fuseau) pendant laquelle une cassure du plus haut / plus bas de Londres compte comme prise de liquidité.")
+sessNy    = input.session("0930-1600", "Session de New York", group = grpS,
+     tooltip = "Même fuseau. Les IFVG et le premier retest IFVG après une SMT ne sont affichés que pendant cette session.")
 showBg    = input.bool(true, "Colorer la session de Londres", group = grpS)
 showLines = input.bool(true, "Tracer London High / London Low", group = grpS)
 
@@ -44,6 +46,8 @@ maxLvl    = input.int(20, "Niveaux synchronisés suivis (max)", minval = 5, maxv
 lvlAge    = input.int(300, "Expiration d'un niveau (barres)", minval = 20, group = grpM)
 showSmtLbl = input.bool(true, "Étiquette SMT à l'extrémité", group = grpM)
 smtNeedConf = input.bool(false, "Exiger une SMT confirmée pour la confluence et les IFVG", group = grpM)
+nySmtOnly   = input.bool(false, "Ne retenir que les SMT déclenchées pendant New York", group = grpM,
+     tooltip = "Désactivé : une SMT déclenchée avant l'ouverture (ex. sur le London Low) peut autoriser un IFVG pendant New York.")
 
 grpA      = "Style SMT"
 smtBullCol = input.color(#26a69a, "SMT haussière : couleur", group = grpA)
@@ -64,7 +68,9 @@ maxAge    = input.int(120, "Expiration d'un FVG non inversé (barres)", minval =
 ifvgAge   = input.int(120, "Expiration d'un IFVG (barres après inversion)", minval = 10, group = grpF)
 farAtr    = input.float(8.0, "Figer les zones éloignées de plus de (× ATR 14)", minval = 0, step = 0.5, group = grpF,
      tooltip = "0 = désactivé. Une zone dont le milieu est à plus de N × ATR du prix cesse d'être prolongée.")
-showRetest = input.bool(true, "Marquer le retest d'un IFVG", group = grpF)
+nyIfvgOnly = input.bool(true, "IFVG tracés uniquement pendant la session de New York", group = grpF)
+showRetest = input.bool(true, "Marquer le 1er retest IFVG après une SMT (session New York)", group = grpF,
+     tooltip = "Une seule étiquette « Retest IFVG » par SMT : le premier IFVG autorisé par cette SMT qui est retesté, pendant la session de New York.")
 keepHist   = input.bool(true, "Conserver les zones terminées (historique)", group = grpF)
 
 grpT      = "Tableau"
@@ -155,6 +161,7 @@ if sessEnd and not na(lonHi) and not na(lonLo)
         label.new(bar_index, lonLo, "London Low",  style = label.style_label_left, color = color.new(colBull, 100), textcolor = colBull, size = size.tiny)
 
 inSweepWin = not na(time(timeframe.period, sessSweep, tz))
+inNy       = not na(time(timeframe.period, sessNy, tz))
 window     = lonDone and inSweepWin and not inS and not na(lonHi) and not na(lonLo)
 
 newSweepLow  = window and not sweptLow  and low  < lonLo
@@ -202,10 +209,12 @@ type Smt
     int   trigBar
     int   endBar
     float endP
-    bool  confirmed = false
-    bool  drawn     = false
-    line  ln        = na
-    label lb        = na
+    bool  confirmed   = false
+    bool  drawn       = false
+    bool  nyTrig      = false      // déclenchée pendant la session de New York
+    bool  retestShown = false      // le 1er retest IFVG a déjà été affiché pour cette SMT
+    line  ln          = na
+    label lb          = na
 
 var array<Lvl> lvls = array.new<Lvl>()
 var array<Smt> smts = array.new<Smt>()
@@ -284,7 +293,7 @@ if array.size(lvls) > 0
                     L.hasSmt := true
                     bool isBull = not L.isHigh
                     Smt s = Smt.new(isBull = isBull, lvl = L, chartIsSweeper = L.chartSwept,
-                         trigBar = bar_index, endBar = bar_index, endP = isBull ? low : high)
+                         trigBar = bar_index, endBar = bar_index, endP = isBull ? low : high, nyTrig = inNy)
                     if dedupe and array.size(smts) > 0
                         for j = array.size(smts) - 1 to 0
                             Smt o = array.get(smts, j)
@@ -351,19 +360,22 @@ if array.size(smts) > 0
             f_smtDelete(s)
             array.remove(smts, i)
 
-// 4) État courant
-bool smtBullActive = false
-bool smtBearActive = false
-Smt  lastSmt = na
+// 4) État courant : dernière SMT valide dans chaque sens
+Smt lastBullSmt = na
+Smt lastBearSmt = na
+Smt lastSmt     = na
 if array.size(smts) > 0
     for i = 0 to array.size(smts) - 1
         Smt s = array.get(smts, i)
-        bool ok = s.confirmed or not smtNeedConf
-        if s.isBull and ok
-            smtBullActive := true
-        if not s.isBull and ok
-            smtBearActive := true
+        bool ok = (s.confirmed or not smtNeedConf) and (not nySmtOnly or s.nyTrig)
+        if ok
+            if s.isBull
+                lastBullSmt := s
+            else
+                lastBearSmt := s
     lastSmt := array.get(smts, array.size(smts) - 1)
+bool smtBullActive = not na(lastBullSmt)
+bool smtBearActive = not na(lastBearSmt)
 
 // ═══════════════════════ FVG / INVERSION FVG ═════════════════════════════════
 type Fvg
@@ -375,6 +387,7 @@ type Fvg
     bool  retested = false
     int   born
     int   invBar   = na
+    Smt   smt      = na       // SMT qui a autorisé l'inversion
 
 var array<Fvg> fvgs = array.new<Fvg>()
 var int   ifvgBullBar = na
@@ -414,8 +427,11 @@ bool ifvgBullRetest = false
 bool ifvgBearRetest = false
 
 // Un IFVG n'est retenu que si une SMT est active (dans le même sens si demandé)
-bool allowBullIfvg = ifvgMatch ? smtBullActive : (smtBullActive or smtBearActive)
-bool allowBearIfvg = ifvgMatch ? smtBearActive : (smtBullActive or smtBearActive)
+// et, par défaut, uniquement pendant la session de New York
+Smt  authBull = ifvgMatch ? lastBullSmt : (na(lastBullSmt) ? lastBearSmt : lastBullSmt)
+Smt  authBear = ifvgMatch ? lastBearSmt : (na(lastBearSmt) ? lastBullSmt : lastBearSmt)
+bool allowBullIfvg = (not nyIfvgOnly or inNy) and not na(authBull)
+bool allowBearIfvg = (not nyIfvgOnly or inNy) and not na(authBear)
 
 if array.size(fvgs) > 0
     for i = array.size(fvgs) - 1 to 0
@@ -431,6 +447,7 @@ if array.size(fvgs) > 0
                 // FVG haussier clôturé en dessous → IFVG baissier (résistance)
                 if allowBearIfvg
                     f_invert(f, false)
+                    f.smt := authBear
                     ifvgBearEvent := true
                     ifvgBearBar   := bar_index
                     lastIfvgTop   := f.top
@@ -444,6 +461,7 @@ if array.size(fvgs) > 0
                 // FVG baissier clôturé au-dessus → IFVG haussier (support)
                 if allowBullIfvg
                     f_invert(f, true)
+                    f.smt := authBull
                     ifvgBullEvent := true
                     ifvgBullBar   := bar_index
                     lastIfvgTop   := f.top
@@ -461,13 +479,19 @@ if array.size(fvgs) > 0
                     drop := true
                 else if not f.retested and bar_index > f.invBar and low <= f.top
                     f.retested := true
-                    ifvgBullRetest := true
+                    Smt S = f.smt
+                    if inNy and not na(S) and not S.retestShown
+                        S.retestShown  := true
+                        ifvgBullRetest := true
             else
                 if close > f.top
                     drop := true
                 else if not f.retested and bar_index > f.invBar and high >= f.bot
                     f.retested := true
-                    ifvgBearRetest := true
+                    Smt S = f.smt
+                    if inNy and not na(S) and not S.retestShown
+                        S.retestShown  := true
+                        ifvgBearRetest := true
         if drop
             f_finish(f)
             array.remove(fvgs, i)
@@ -514,13 +538,13 @@ string txtAbove = ""
 if newSweepLow
     txtBelow += "Sweep London Low" + (sweepLowRej ? " (rejet)" : "")
 if ifvgBullRetest and showRetest
-    txtBelow += (txtBelow != "" ? "\n" : "") + "Retest IFVG ▲"
+    txtBelow += (txtBelow != "" ? "\n" : "") + "1er retest IFVG ▲"
 if setupBullNew
     txtBelow += (txtBelow != "" ? "\n" : "") + "SETUP HAUSSIER 3/3"
 if newSweepHigh
     txtAbove += "Sweep London High" + (sweepHighRej ? " (rejet)" : "")
 if ifvgBearRetest and showRetest
-    txtAbove += (txtAbove != "" ? "\n" : "") + "Retest IFVG ▼"
+    txtAbove += (txtAbove != "" ? "\n" : "") + "1er retest IFVG ▼"
 if setupBearNew
     txtAbove += (txtAbove != "" ? "\n" : "") + "SETUP BAISSIER 3/3"
 
@@ -612,7 +636,7 @@ alertcondition(alertOn and confSmtBear,    "SMT baissière confirmée", "SMT bai
 alertcondition(alertOn and (invSmtBull or invSmtBear), "SMT invalidée", "SMT invalidée sur {{ticker}} ({{interval}})")
 alertcondition(alertOn and ifvgBullEvent,  "IFVG haussier formé",     "IFVG haussier (avec SMT) sur {{ticker}} ({{interval}})")
 alertcondition(alertOn and ifvgBearEvent,  "IFVG baissier formé",     "IFVG baissier (avec SMT) sur {{ticker}} ({{interval}})")
-alertcondition(alertOn and ifvgBullRetest, "Retest IFVG haussier",    "Retest IFVG haussier sur {{ticker}} ({{interval}})")
-alertcondition(alertOn and ifvgBearRetest, "Retest IFVG baissier",    "Retest IFVG baissier sur {{ticker}} ({{interval}})")
+alertcondition(alertOn and ifvgBullRetest, "1er retest IFVG haussier", "1er retest IFVG haussier après SMT sur {{ticker}} ({{interval}})")
+alertcondition(alertOn and ifvgBearRetest, "1er retest IFVG baissier", "1er retest IFVG baissier après SMT sur {{ticker}} ({{interval}})")
 alertcondition(alertOn and setupBullNew,   "Setup haussier complet",  "Sweep + SMT + IFVG haussiers sur {{ticker}} ({{interval}})")
 alertcondition(alertOn and setupBearNew,   "Setup baissier complet",  "Sweep + SMT + IFVG baissiers sur {{ticker}} ({{interval}})")

@@ -32,8 +32,13 @@ Fichier : [`london_sweep_ifvg_smt.pine`](./london_sweep_ifvg_smt.pine)
    Les FVG sont suivis en arrière-plan. Une inversion (FVG haussier clôturé en dessous → IFVG
    baissier ; FVG baissier clôturé au-dessus → IFVG haussier) n'est **tracée que si une SMT est
    active**, par défaut dans le même sens. Sans SMT, l'inversion est ignorée.
+   Par défaut, les IFVG ne sont tracés que pendant la **session de New York** (09:30-16:00,
+   fuseau de l'indicateur).
    Un IFVG est figé si le prix clôture de nouveau au-delà de la zone, s'il expire ou s'il
-   s'éloigne du prix. Le premier retour du prix dans la zone est marqué « Retest IFVG ».
+   s'éloigne du prix.
+   **Retest** : une seule étiquette « 1er retest IFVG » par SMT, sur le premier IFVG autorisé par
+   cette SMT que le prix vient retester, et uniquement pendant la session de New York. Les
+   retests suivants ne sont pas affichés.
 
 4. **Tableau récapitulatif** : session, London High/Low, liquidité prise, dernière SMT (sens,
    état, qui a pris et qui a tenu, niveau), nombre de niveaux synchronisés et de SMT actives,
@@ -65,6 +70,9 @@ L'option « Exiger une SMT confirmée » impose une SMT parquée pour compter le
 | Session de Londres | `0200-0500` | Plage horaire de Londres (fuseau ci-dessous). |
 | Fuseau horaire | `America/New_York` | Appliqué à toutes les sessions. |
 | Fenêtre de prise de liquidité | `0500-1600` | Période pendant laquelle une cassure compte comme sweep. |
+| Session de New York | `0930-1600` | Fenêtre des IFVG et du 1er retest IFVG. |
+| Ne retenir que les SMT déclenchées pendant New York | désactivé | Activé : une SMT d'avant l'ouverture n'autorise aucun IFVG. |
+| IFVG tracés uniquement pendant New York | activé | Une inversion hors session est ignorée. |
 | Symbole corrélé automatique | activé | NQ/MNQ/NDX/US100 → `CME_MINI:ES1!` ; ES/MES/SPX/US500 → `CME_MINI:NQ1!`. |
 | Sensibilité des pivots | Normal | Sensible = 1, Normal = 4, Strict = 6 barres de chaque côté. |
 | SMT en temps réel | activé | Tracé dès la divergence avec trailing ; sinon tracé à la confirmation. |
