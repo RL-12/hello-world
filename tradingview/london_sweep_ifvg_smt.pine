@@ -426,19 +426,20 @@ bool ifvgBearEvent  = false
 bool ifvgBullRetest = false
 bool ifvgBearRetest = false
 
-// Un IFVG n'est retenu que si une SMT est active (dans le même sens si demandé)
-// et, par défaut, uniquement pendant la session de New York
-Smt  authBull = ifvgMatch ? lastBullSmt : (na(lastBullSmt) ? lastBearSmt : lastBullSmt)
-Smt  authBear = ifvgMatch ? lastBearSmt : (na(lastBearSmt) ? lastBullSmt : lastBearSmt)
-bool allowBullIfvg = (not nyIfvgOnly or inNy) and not na(authBull)
-bool allowBearIfvg = (not nyIfvgOnly or inNy) and not na(authBear)
-// Barre de déclenchement de la SMT : le FVG doit s'être formé À PARTIR de cette barre
-int authBullBar = na
-int authBearBar = na
-if not na(authBull)
-    authBullBar := authBull.trigBar
-if not na(authBear)
-    authBearBar := authBear.trigBar
+// Un FVG n'est validé en IFVG que si une SMT encore valide a été déclenchée
+//   - ENTRE la création du FVG (barre born) et la barre d'inversion (barre courante)
+//   - pendant la session de New York
+//   - dans le même sens que l'IFVG (si demandé)
+f_authSmt(bool wantBull, int born) =>
+    Smt res = na
+    if array.size(smts) > 0
+        for i = 0 to array.size(smts) - 1
+            Smt s = array.get(smts, i)
+            bool dirOk = ifvgMatch ? s.isBull == wantBull : true
+            bool ok = dirOk and s.nyTrig and (s.confirmed or not smtNeedConf) and s.trigBar >= born and s.trigBar <= bar_index
+            if ok
+                res := s
+    res
 
 if array.size(fvgs) > 0
     for i = array.size(fvgs) - 1 to 0
@@ -452,10 +453,12 @@ if array.size(fvgs) > 0
                 drop := true
             else if f.bullOrig and close < f.bot
                 // FVG haussier clôturé en dessous → IFVG baissier (résistance)
-                // Retenu seulement si le FVG (1re bougie = born - 2) s'est formé après le déclenchement de la SMT
-                if allowBearIfvg and f.born - 2 >= authBearBar
+                Smt A = na
+                if not nyIfvgOnly or inNy
+                    A := f_authSmt(false, f.born)
+                if not na(A)
                     f_invert(f, false)
-                    f.smt := authBear
+                    f.smt := A
                     ifvgBearEvent := true
                     ifvgBearBar   := bar_index
                     lastIfvgTop   := f.top
@@ -467,10 +470,12 @@ if array.size(fvgs) > 0
                     continue
             else if not f.bullOrig and close > f.top
                 // FVG baissier clôturé au-dessus → IFVG haussier (support)
-                // Retenu seulement si le FVG (1re bougie = born - 2) s'est formé après le déclenchement de la SMT
-                if allowBullIfvg and f.born - 2 >= authBullBar
+                Smt A = na
+                if not nyIfvgOnly or inNy
+                    A := f_authSmt(true, f.born)
+                if not na(A)
                     f_invert(f, true)
-                    f.smt := authBull
+                    f.smt := A
                     ifvgBullEvent := true
                     ifvgBullBar   := bar_index
                     lastIfvgTop   := f.top

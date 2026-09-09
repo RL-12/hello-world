@@ -30,10 +30,11 @@ Fichier : [`london_sweep_ifvg_smt.pine`](./london_sweep_ifvg_smt.pine)
 
 3. **Inversion Fair Value Gap (IFVG), uniquement avec une SMT**
    Les FVG sont suivis en arrière-plan. Une inversion (FVG haussier clôturé en dessous → IFVG
-   baissier ; FVG baissier clôturé au-dessus → IFVG haussier) n'est **tracée que si une SMT est
-   active**, par défaut dans le même sens, **et si le FVG s'est formé à partir de la bougie de
-   déclenchement de la SMT** (la bougie de prise du niveau peut être la première bougie du FVG).
-   Un FVG formé avant la SMT est ignoré, même s'il s'inverse pendant qu'elle est active.
+   baissier ; FVG baissier clôturé au-dessus → IFVG haussier) n'est **tracée que si une SMT
+   encore valide a été déclenchée entre la création du FVG et son inversion**, cette SMT ayant
+   été déclenchée **pendant la session de New York**, et par défaut dans le même sens que l'IFVG.
+   Chronologie exigée : FVG créé → SMT (New York) → inversion. Sans SMT dans cet intervalle,
+   l'inversion est ignorée.
    Par défaut, les IFVG ne sont tracés que pendant la **session de New York** (09:30-16:00,
    fuseau de l'indicateur).
    Un IFVG est figé si le prix clôture de nouveau au-delà de la zone, s'il expire ou s'il
